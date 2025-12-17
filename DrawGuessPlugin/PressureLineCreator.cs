@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
@@ -29,6 +30,17 @@ namespace DrawGuessPlugin
         private readonly List<DrawableShape> fullLineSegments = new List<DrawableShape>();
         private int lineGroupID = -1;
         private static int lastLineGroupID;
+        
+        private static FieldInfo _createdDrawablesField;
+        private static FieldInfo CreatedDrawablesField => _createdDrawablesField ??= AccessTools.Field(typeof(DrawModule), "CreatedDrawablesByMe");
+        
+        private static FieldInfo _existingLinesField;
+        private static PropertyInfo _localPlayfabIdProp; 
+        private static PropertyInfo LocalPlayfabIdProp => _localPlayfabIdProp ??= AccessTools.Property(typeof(DrawModule), "LocalPlayfabId");
+
+        private static FieldInfo _mlPlayerField;
+        private static bool _checkedForMlModule = false;
+        private static bool _isMlModule = false;
 
         public bool Finished { get; private set; }
         public int LineGroupID => lineGroupID;
@@ -43,6 +55,50 @@ namespace DrawGuessPlugin
         {
             drawModule = dm;
             pressureSmoother = new SmoothedValue(5);
+            CheckModuleType();
+            
+            if (_isMlModule)
+            {
+                DrawGuessPluginLoader.Log.LogInfo("PressureLineCreator: MLDrawModule detected, disabling PressureLineCreator to use native drawing.");
+                this.enabled = false;
+                return;
+            }
+        }
+
+        private void CheckModuleType()
+        {
+            if (drawModule == null) return;
+            
+            if (!_checkedForMlModule)
+            {
+                var type = drawModule.GetType();
+                string typeName = type.Name;
+                
+                if (typeName.Contains("Sync") || typeName == "MLDrawModule" || typeName.Contains("Stage") || typeName.Contains("ML"))
+                {
+                    _isMlModule = true;
+                    DrawGuessPluginLoader.Log.LogInfo($"PressureLineCreator: Detected Stage/Sync Module by name ({typeName}).");
+                }
+                else 
+                {
+                    try
+                    {
+                        var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                        _mlPlayerField = type.GetField("player", flags);
+                        if (_mlPlayerField != null)
+                        {
+                            var timerField = type.GetField("timer", flags);
+                            if (timerField != null)
+                            {
+                                _isMlModule = true;
+                                DrawGuessPluginLoader.Log.LogInfo("PressureLineCreator: Detected Stage/MLDrawModule capabilities (Field Check).");
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                _checkedForMlModule = true;
+            }
         }
 
         private void UpdateEraseButtons()
@@ -61,9 +117,6 @@ namespace DrawGuessPlugin
             }
         }
 
-        private static FieldInfo _createdDrawablesField;
-        private static FieldInfo CreatedDrawablesField => _createdDrawablesField ??= AccessTools.Field(typeof(DrawModule), "CreatedDrawablesByMe");
-
         private void AddToCreatedDrawables(DrawableElement elem)
         {
             try
@@ -74,11 +127,6 @@ namespace DrawGuessPlugin
                     if (!collection.Contains(elem))
                     {
                         collection.Add(elem);
-                        DrawGuessPluginLoader.Log.LogInfo($"AddToCreatedDrawables: Added element {elem.Ident} to CreatedDrawablesByMe. Total count: {collection.Count}");
-                    }
-                    else
-                    {
-                        DrawGuessPluginLoader.Log.LogInfo($"AddToCreatedDrawables: Element {elem.Ident} already exists in collection.");
                     }
                 }
                 else
@@ -86,11 +134,8 @@ namespace DrawGuessPlugin
                     DrawGuessPluginLoader.Log.LogError("AddToCreatedDrawables: Collection is null");
                 }
 
-                // LobbyDrawModule
-                if (drawModule.GetType().Name == "LobbyDrawModule")
-                {
-                    AddToLobbyExistingLines(elem);
-                }
+
+                AddToLobbyExistingLines(elem);
             }
             catch (Exception ex)
             {
@@ -102,74 +147,62 @@ namespace DrawGuessPlugin
         {
             try
             {
-                // 获取 ExistingLinesInMulti 字典
-                var existingLinesField = AccessTools.Field(drawModule.GetType(), "ExistingLinesInMulti");
-                var existingLines = existingLinesField?.GetValue(drawModule) as System.Collections.IDictionary;
-                
+
+                if (_existingLinesField == null)
+                {
+
+                    _existingLinesField = drawModule.GetType().GetField("ExistingLinesInMulti",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+
+                if (_existingLinesField == null) return;
+
+                var existingLines = _existingLinesField.GetValue(drawModule) as System.Collections.IDictionary;
+
                 if (existingLines != null)
                 {
                     string ownerId = elem.Owner;
                     if (string.IsNullOrEmpty(ownerId))
                     {
-                        // 尝试获取 LocalPlayfabId
-                        var localIdProp = drawModule.GetType().GetProperty("LocalPlayfabId");
-                        ownerId = localIdProp?.GetValue(drawModule) as string;
+                        ownerId = LocalPlayfabIdProp?.GetValue(drawModule) as string;
                     }
-
-                    DrawGuessPluginLoader.Log.LogInfo($"AddToLobbyExistingLines: Attempting to add element {elem.Ident} for owner {ownerId}");
 
                     if (!string.IsNullOrEmpty(ownerId))
                     {
-                        // 确保内部字典存在
                         if (!existingLines.Contains(ownerId))
                         {
                             var dictType = typeof(Dictionary<int, DrawableElement>);
                             var newDict = Activator.CreateInstance(dictType);
                             existingLines.Add(ownerId, newDict);
-                            DrawGuessPluginLoader.Log.LogInfo($"AddToLobbyExistingLines: Created new dictionary for owner {ownerId}");
                         }
 
-                        var innerDict = existingLines[ownerId] as System.Collections.IDictionary; // Cast to IDictionary to be safe with reflection
+                        var innerDict = existingLines[ownerId] as System.Collections.IDictionary;
                         if (innerDict != null && !innerDict.Contains(elem.Ident))
                         {
                             innerDict.Add(elem.Ident, elem);
-                            DrawGuessPluginLoader.Log.LogInfo($"AddToLobbyExistingLines: Successfully added element {elem.Ident} to ExistingLinesInMulti for {ownerId}");
-                        }
-                        else
-                        {
-                            DrawGuessPluginLoader.Log.LogInfo($"AddToLobbyExistingLines: Element {elem.Ident} already exists or innerDict is null");
                         }
                     }
-                    else
-                    {
-                        DrawGuessPluginLoader.Log.LogWarning("AddToLobbyExistingLines: OwnerID is null or empty");
-                    }
-                }
-                else
-                {
-                    DrawGuessPluginLoader.Log.LogWarning("AddToLobbyExistingLines: ExistingLinesInMulti field is null (not in LobbyDrawModule?)");
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                DrawGuessPluginLoader.Log.LogError($"AddToLobbyExistingLines Error: {ex}");
+                
             }
         }
 
         public void StartNewLine(Vector2 startPoint, DrawableShape drawableShape)
         {
-            DrawGuessPluginLoader.Log.LogInfo($"PressureLineCreator: StartNewLine at {startPoint}");
+            if (_isMlModule) return; // 双重检查
+
             lineGroupID = ++lastLineGroupID;
             fullLineSegments.Clear();
             fullLineSegments.Add(drawableShape);
             
-            // 立即注册第一段线条，确保它被追踪（防止"Clear"时遗漏）
             PressureLine.RegisterSegment(lineGroupID, drawableShape);
             
             AddToCreatedDrawables(drawableShape);
-            UpdateEraseButtons(); // 激活删除按钮
+            UpdateEraseButtons();
             
-            // 关键修复：激活碰撞体
             drawableShape.SetHoverActive(true);
             
             currentDrawElement = drawableShape;
@@ -186,7 +219,6 @@ namespace DrawGuessPlugin
 
             mainPoints.Add(startPoint);
             float initialPressure = Pen.current != null ? Pen.current.pressure.ReadValue() : 1f;
-            DrawGuessPluginLoader.Log.LogDebug($"PressureLineCreator: Initial pressure {initialPressure}");
             brushSizes.Add(Mathf.Lerp(1f, 99f, initialPressure));
             currentSegmentPoints.Add(startPoint);
             currentSegmentBrushSizes.Add(brushSizes[0]);
@@ -194,18 +226,15 @@ namespace DrawGuessPlugin
 
         public void BeginLine(DrawableShape drawableShape)
         {
-            DrawGuessPluginLoader.Log.LogInfo("PressureLineCreator: BeginLine");
             lineGroupID = ++lastLineGroupID;
             fullLineSegments.Clear();
             fullLineSegments.Add(drawableShape);
             
-            // 立即注册第一段线条
             PressureLine.RegisterSegment(lineGroupID, drawableShape);
             
             AddToCreatedDrawables(drawableShape);
-            UpdateEraseButtons(); // 激活删除按钮
+            UpdateEraseButtons();
 
-            // 关键修复：激活碰撞体
             drawableShape.SetHoverActive(true);
 
             currentDrawElement = drawableShape;
@@ -263,11 +292,7 @@ namespace DrawGuessPlugin
         {
             if (mainPoints.Count < 2)
             {
-                if (currentDrawElement != null) 
-                {
-                    // 使用对象池回收
-                    DrawableShapePool.Return(currentDrawElement);
-                }
+                if (currentDrawElement != null) Destroy(currentDrawElement.gameObject);
                 return;
             }
 
@@ -284,10 +309,8 @@ namespace DrawGuessPlugin
 
             if (list.Count > 0)
             {
-                // 使用组合撤销
                 drawModule.UndoSystem.AddEvent(new UndoMultiDrawElement(list));
                 
-                // 更新UI按钮状态
                 try
                 {
                     var hub = Traverse.Create(drawModule).Field("DrawingToolHub").GetValue<DrawingToolHub>();
@@ -337,7 +360,7 @@ namespace DrawGuessPlugin
         {
             if (currentSegmentPoints.Count < 2) return;
             var points = GeneratePolygonPoints(false);
-            if (LineIntersectionUtils.CheckSelfIntersection(points))
+            if (CheckSelfIntersection(points))
             {
                 HandleSelfIntersection();
                 return;
@@ -353,11 +376,29 @@ namespace DrawGuessPlugin
             drawElements.Add(currentDrawElement);
             drawModule.CheckSpecialMode(currentDrawElement, true);
             
-            // 替代 OnFinishDrawingCurrent，只更新计数，不添加Undo
             drawModule.SortOrder.IncreaseStrokeCount(currentDrawElement.DrawType == DrawElementT.Fill);
             
             PressureLine.RegisterSegment(lineGroupID, currentDrawElement);
             fullLineSegments.Add(currentDrawElement);
+            
+            SyncCurrentSegment();
+        }
+
+        private void SyncCurrentSegment()
+        {
+
+            if (LobbyManager.Instance != null && LobbyManager.Instance.SyncController != null)
+            {
+                try
+                {
+                    var lineInfo = currentDrawElement.ToLineInformation();
+                    LobbyManager.Instance.SyncController.LobbyAddDrawLine(lineInfo);
+                }
+                catch (Exception ex)
+                {
+                    DrawGuessPluginLoader.Log.LogError($"SyncCurrentSegment Lobby Error: {ex}");
+                }
+            }
         }
 
         private readonly List<Vector2> polygonPointsBuffer = new List<Vector2>(1024);
@@ -438,26 +479,80 @@ namespace DrawGuessPlugin
 
         private void HandleSelfIntersection()
         {
-            if (currentSegmentPoints.Count < 2) return;
+            if (currentSegmentPoints.Count < 3) return;
+
             var lastPoint = currentSegmentPoints[currentSegmentPoints.Count - 1];
             var lastBrush = currentSegmentBrushSizes[currentSegmentBrushSizes.Count - 1];
-            FinalizeCurrentSegmentInternal();
+            
+            currentSegmentPoints.RemoveAt(currentSegmentPoints.Count - 1);
+            currentSegmentBrushSizes.RemoveAt(currentSegmentBrushSizes.Count - 1);
+
+            if (currentSegmentPoints.Count >= 2)
+            {
+                FinalizeCurrentSegmentInternal();
+            }
+
             StartNewSegment();
+
             currentSegmentPoints.Add(lastPoint);
             currentSegmentBrushSizes.Add(lastBrush);
+            
             UpdateCurrentPolygon();
         }
 
-        private static PropertyInfo _localPlayfabIdProp;
-        private static PropertyInfo LocalPlayfabIdProp => _localPlayfabIdProp ??= AccessTools.Property(typeof(DrawModule), "LocalPlayfabId");
+        private bool CheckSelfIntersection(List<Vector2> points)
+        {
+            int count = points.Count;
+            if (count < 4) return false;
+            
+            for (int i = 0; i < count; i++)
+            {
+                Vector2 p1 = points[i];
+                Vector2 p2 = points[(i + 1) % count];
+                
+                for (int j = i + 2; j < count; j++)
+                {
+                    if (Math.Abs(i - j) == count - 1) continue;
+                    
+                    Vector2 p3 = points[j];
+                    Vector2 p4 = points[(j + 1) % count];
+                    
+                    if (Math.Max(p1.x, p2.x) < Math.Min(p3.x, p4.x) ||
+                        Math.Min(p1.x, p2.x) > Math.Max(p3.x, p4.x) ||
+                        Math.Max(p1.y, p2.y) < Math.Min(p3.y, p4.y) ||
+                        Math.Min(p1.y, p2.y) > Math.Max(p3.y, p4.y))
+                    {
+                        continue;
+                    }
+
+                    if (LineSegmentsIntersect(p1, p2, p3, p4))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        private bool LineSegmentsIntersect(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
+        {
+            float d1 = Direction(c, d, a);
+            float d2 = Direction(c, d, b);
+            float d3 = Direction(a, b, c);
+            float d4 = Direction(a, b, d);
+            if (d1 * d2 < 0 && d3 * d4 < 0) return true;
+            return false;
+        }
+
+        private float Direction(Vector2 p1, Vector2 p2, Vector2 p3)
+        {
+            return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+        }
 
         private DrawableShape CreateNewPressureSegment(Vector2 startPoint, float brushSize, DrawModule dm)
         {
             try
             {
                 var shapePrefab = DrawHelpers.Instance.FilledShape;
-                // var drawableShape = UnityEngine.Object.Instantiate(shapePrefab);
-                
+                var drawableShape = UnityEngine.Object.Instantiate(shapePrefab);
                 byte bs = (byte)Mathf.Clamp(brushSize, 1f, 99f);
                 string owner = null;
                 try
@@ -469,21 +564,29 @@ namespace DrawGuessPlugin
                 {
                     owner = "local";
                 }
+                drawableShape.Init(bs, dm.GetActiveColorToUse(), dm.SortOrder.GetNextSortOrder(false), DrawHelpers.GetSortingLayer(dm.SelectedLayer, false, false), owner, dm);
                 
-                var drawableShape = DrawableShapePool.Get(
-                    shapePrefab,
-                    dm,
-                    bs,
-                    dm.GetActiveColorToUse(),
-                    dm.SortOrder.GetNextSortOrder(false),
-                    DrawHelpers.GetSortingLayer(dm.SelectedLayer, false, false),
-                    owner
-                );
+                try
+                {
+                    var layerProp = AccessTools.Property(typeof(DrawableElement), "Layer");
+                    if (layerProp != null)
+                    {
+                        layerProp.SetValue(drawableShape, dm.SelectedLayer);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    DrawGuessPluginLoader.Log.LogError($"CreateNewPressureSegment: Failed to set Layer property: {ex}");
+                }
 
+                drawableShape.transform.position = Vector3.zero;
+                var t = drawableShape.transform;
+                t.SetParent(dm.LineParent);
+                var lp = t.localPosition;
+                t.localPosition = new Vector3(lp.x, lp.y, dm.SortOrder.NextLineZPos(false));
                 
                 AddToCreatedDrawables(drawableShape);
                 
-                // 关键修复：激活碰撞体，确保 Raycast 能检测到
                 drawableShape.SetHoverActive(true); 
                 UpdateToolComponents(drawableShape);
                 
@@ -501,7 +604,6 @@ namespace DrawGuessPlugin
             try
             {
                 var activeTool = drawModule.ActiveDrawTool;
-                DrawGuessPluginLoader.Log.LogInfo($"UpdateToolComponents: Active tool is {activeTool} for element {drawableShape.Ident}");
                 
                 if (activeTool == DrawModule.DrawTool.Eraser)
                 {
