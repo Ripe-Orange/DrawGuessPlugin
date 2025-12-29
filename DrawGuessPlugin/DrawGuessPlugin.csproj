@@ -13,6 +13,14 @@
       https://nuget.samboy.dev/v3/index.json
     </RestoreAdditionalProjectSources>
     <RootNamespace>DrawGuessPlugin</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <Authors>Ripe-Orange</Authors>
+    <Description>你画我猜插件</Description>
+    <Copyright>MIT License</Copyright>
+    <PackageProjectUrl>https://github.com/Ripe-Orange/DrawGuessPlugin</PackageProjectUrl>
+    <PackageLicenseUrl>https://github.com/Ripe-Orange/DrawGuessPlugin/LICENSE</PackageLicenseUrl>
+    <RepositoryUrl>https://github.com/Ripe-Orange/DrawGuessPlugin</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
