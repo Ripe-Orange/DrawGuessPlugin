@@ -78,10 +78,12 @@ namespace DrawGuessPlugin
             {
                 var typeName = drawModule.GetType().Name;
                 
-                if (typeName.Contains("Sync") || typeName == "MLDrawModule" || typeName.Contains("Stage") || typeName.Contains("ML") || typeName == "ChainDrawModule")
+                if ((typeName.Contains("Sync") && typeName != "SyncDrawModule") || typeName == "MLDrawModule" || typeName.Contains("Stage") || typeName.Contains("ML") || typeName == "ChainDrawModule")
                 {
                     _isMlModule = true;
                 }
+                
+                DrawGuessPluginLoader.Log.LogInfo($"CheckModuleType: {typeName} -> IsMlModule={_isMlModule}");
                 _checkedForMlModule = true;
             }
         }
@@ -179,7 +181,6 @@ namespace DrawGuessPlugin
         /// </summary>
         public void StartNewLine(Vector2 startPoint, DrawableShape drawableShape)
         {
-            // if (_isMlModule) return; // REMOVED: This was blocking initialization in Sync/Stage modes
 
             lineGroupID = ++lastLineGroupID;
             fullLineSegments.Clear();
@@ -325,7 +326,7 @@ namespace DrawGuessPlugin
             var list = fullLineSegments.Where(seg => seg != null).Cast<DrawableElement>().ToList();
             if (list.Count > 0)
             {
-                drawModule.UndoSystem.AddEvent(new UndoMultiDrawElement(list));
+                drawModule.UndoSystem.AddEvent(new UndoMultiDrawElement(list, drawModule));
                 
                 try
                 {
@@ -420,39 +421,69 @@ namespace DrawGuessPlugin
             drawElements.Add(currentDrawElement);
             drawModule.CheckSpecialMode(currentDrawElement, true);
             
-            drawModule.SortOrder.IncreaseStrokeCount(currentDrawElement.DrawType == DrawElementT.Fill);
-            
+            // 通过反射调用 OnFinishDrawingCurrent 方法，确保游戏状态正确更新
+            bool onFinishSuccess = false;
+            try 
+            {
+                var onFinishMethod = AccessTools.Method(typeof(DrawModule), "OnFinishDrawingCurrent", new Type[] { typeof(DrawableElement) });
+                if (onFinishMethod != null)
+                {
+                    onFinishMethod.Invoke(drawModule, new object[] { currentDrawElement });
+                    onFinishSuccess = true;
+                }
+                else
+                {
+                     DrawGuessPluginLoader.Log.LogWarning("FinalizeCurrentSegmentInternal: 无法找到 OnFinishDrawingCurrent method.");
+                }
+            }
+            catch (Exception ex)
+            {
+                DrawGuessPluginLoader.Log.LogError($"FinalizeCurrentSegmentInternal: Error invoking OnFinishDrawingCurrent: {ex}");
+            }
+
+        
             PressureLine.RegisterSegment(lineGroupID, currentDrawElement);
             fullLineSegments.Add(currentDrawElement);
             
             // 网络同步逻辑
-            SyncCurrentSegment();
+            SyncCurrentSegment(onFinishSuccess);
         }
 
         /// <summary>
         /// 同步当前线段到网络，支持不同游戏模式
         /// </summary>
-        private void SyncCurrentSegment()
+        private void SyncCurrentSegment(bool onFinishHandledSync)
         {
             try
             {
                 string moduleName = drawModule.GetType().Name;
                 
-                // 1. Stage模式 (MLDrawModule / SyncDrawModule)
-                if (_isMlModule && (moduleName == "MLDrawModule" || moduleName == "SyncDrawModule"))
+                // 1. 竞猜模式 (MLDrawModule / SyncDrawModule)
+                if (moduleName == "MLDrawModule" || moduleName == "SyncDrawModule")
                 {
-                    SyncStageMode();
-                    return;
+                    // If OnFinishDrawingCurrent was successful, it handles sync internally for these modules.
+                    // Only perform manual sync if OnFinishDrawingCurrent failed or was not called.
+                    if (onFinishHandledSync)
+                    {
+                        DrawGuessPluginLoader.Log.LogInfo($"SyncCurrentSegment: Skipped manual sync for {moduleName} (handled by OnFinishDrawingCurrent).");
+                        return;
+                    }
+
+                    if (_isMlModule)
+                    {
+                        SyncStageMode();
+                        return;
+                    }
                 }
 
-                // 2. 耳语/链式模式 (ChainDrawModule)
+                // 接龙模式 (ChainDrawModule)
                 if (moduleName == "ChainDrawModule")
                 {
                     SyncChainMode();
                     return;
                 }
 
-                // 3. 大厅模式
+                // 茶会模式
                 if (LobbyManager.Instance != null && LobbyManager.Instance.SyncController != null)
                 {
                     var lineInfo = currentDrawElement.ToLineInformation();
@@ -470,13 +501,23 @@ namespace DrawGuessPlugin
         /// </summary>
         private void SyncStageMode()
         {
+            DrawGuessPluginLoader.Log.LogInfo("SyncStageMode: Starting sync process...");
             var playerField = AccessTools.Field(drawModule.GetType(), "player");
-            if (playerField == null) return;
+            if (playerField == null) 
+            {
+                DrawGuessPluginLoader.Log.LogError("SyncStageMode: 'player' field not found on drawModule.");
+                return;
+            }
             
             var player = playerField.GetValue(drawModule);
-            if (player == null) return;
+            if (player == null) 
+            {
+                DrawGuessPluginLoader.Log.LogError("SyncStageMode: 'player' instance is null.");
+                return;
+            }
             
             string playerTypeName = player.GetType().Name;
+            DrawGuessPluginLoader.Log.LogInfo($"SyncStageMode: Player type is {playerTypeName}");
             
             // 1. 同步猜测模式 (SyncDGPlayer)
             if (playerTypeName == "SyncDGPlayer")
@@ -486,15 +527,24 @@ namespace DrawGuessPlugin
                 {
                     var lineInfo = currentDrawElement.ToLineInformation();
                     addLineMethod.Invoke(player, new object[] { lineInfo });
+                    DrawGuessPluginLoader.Log.LogInfo("SyncStageMode: Invoked DrawAddLine on SyncDGPlayer.");
+                }
+                else
+                {
+                    DrawGuessPluginLoader.Log.LogError("SyncStageMode: DrawAddLine method not found on SyncDGPlayer.");
                 }
             }
-            // 2. 舞台模式 (MLDGPlayer)
             else 
             {
                 var distributeMethod = AccessTools.Method(player.GetType(), "DistributeDrawingPartial", new Type[] { typeof(DrawableElement) });
                 if (distributeMethod != null)
                 {
                     distributeMethod.Invoke(player, new object[] { currentDrawElement });
+                    DrawGuessPluginLoader.Log.LogInfo($"SyncStageMode: Invoked DistributeDrawingPartial on {playerTypeName}.");
+                }
+                else
+                {
+                    DrawGuessPluginLoader.Log.LogError($"SyncStageMode: DistributeDrawingPartial method not found on {playerTypeName}.");
                 }
             }
         }

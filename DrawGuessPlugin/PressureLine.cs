@@ -54,50 +54,7 @@ namespace DrawGuessPlugin
         }
     }
 
-    /// <summary>
-    /// 多线条撤销操作，用于撤销一组压力线条
-    /// </summary>
-    public class UndoMultiDrawElement : IUndo
-    {
-        private List<DrawableElement> lines;
 
-        public UndoMultiDrawElement(IEnumerable<DrawableElement> drawnLines)
-        {
-            this.lines = new List<DrawableElement>(drawnLines);
-        }
-
-        public void Redo()
-        {
-            foreach (var line in lines)
-            {
-                if (line != null)
-                {
-                    line.MarkAsDeleted(false);
-                    if (LobbyManager.Instance != null && LobbyManager.Instance.SyncController != null)
-                    {
-                        LobbyManager.Instance.SyncController.LobbyAddDrawLine(line.ToLineInformation());
-                    }
-                }
-            }
-        }
-
-        public void Undo()
-        {
-            foreach (var line in lines)
-            {
-                if (line != null)
-                {
-                    line.MarkAsDeleted(true);
-                    if (LobbyManager.Instance != null && LobbyManager.Instance.SyncController != null && LobbyDrawModule.Instance != null)
-                    {
-                        string ownerId = AccessTools.Property(typeof(DrawModule), "LocalPlayfabId").GetValue(LobbyDrawModule.Instance) as string;
-                        if (string.IsNullOrEmpty(ownerId)) ownerId = "local";
-                        LobbyManager.Instance.SyncController.LobbyDrawingDeletePrecise(ownerId, line.Ident);
-                    }
-                }
-            }
-        }
-    }
 
     /// <summary>
     /// 压感补丁类，包含所有与压感相关的补丁方法
@@ -321,7 +278,7 @@ namespace DrawGuessPlugin
                 }
             }
             
-            // 明确允许ChainDrawModule（耳语模式）
+            // 允许ChainDrawModule
             if (name == "ChainDrawModule")
             {
                  return false;
@@ -515,7 +472,7 @@ namespace DrawGuessPlugin
                         }
                     }
 
-                    // 更新成就统计
+                    // 更新
                     if (trigger != DrawingToolTrigger.System)
                         DrawModuleAccoladeTracker.NrOfClears++;
                     if (trigger == DrawingToolTrigger.Shortcut)
