@@ -6,15 +6,21 @@ using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using Shapes;
 
 namespace DrawGuessPlugin
 {
-    // PressureLine模块实现
+    /// <summary>
+    /// 压力感应线条模块，用于管理压力线条的创建和同步
+    /// </summary>
     public class PressureLine : IDrawGuessPluginModule
     {
         internal static readonly Dictionary<DrawModule, PressureLineCreator> ActiveCreators = new();
         internal static readonly Dictionary<int, List<DrawableElement>> PressureGroups = new();
 
+        /// <summary>
+        /// 注册线段到压力线条组
+        /// </summary>
         internal static void RegisterSegment(int groupId, DrawableElement elem)
         {
             if (!PressureGroups.TryGetValue(groupId, out var list))
@@ -25,224 +31,34 @@ namespace DrawGuessPlugin
             list.Add(elem);
         }
 
+        /// <summary>
+        /// 清除指定ID的压力线条组
+        /// </summary>
         internal static void ClearGroup(int groupId)
         {
             if (PressureGroups.ContainsKey(groupId)) PressureGroups.Remove(groupId);
         }
+        
+        /// <summary>
+        /// 初始化压力感应线条模块
+        /// </summary>
         public void Initialize(DrawGuessPluginLoader loader)
         {
-            DrawGuessPluginLoader.Log.LogInfo("Initializing PressureLine module...");
-
-            // 初始化线条组管理器
-            var managerObj = new GameObject("PressureLineGroupManager");
-            managerObj.AddComponent<PressureLineGroupManager>();
-            UnityEngine.Object.DontDestroyOnLoad(managerObj);
-
-            DrawGuessPluginLoader.Log.LogInfo("PressureLine module initialized successfully.");
         }
 
+        /// <summary>
+        /// 卸载压力感应线条模块
+        /// </summary>
         public void Uninitialize()
         {
-            DrawGuessPluginLoader.Log.LogInfo("Unloading PressureLine module...");
-         
         }
     }
 
-    public class PressureLineGroupManager : MonoBehaviour
-    {
-        public static PressureLineGroupManager Instance { get; private set; }
 
-        private readonly Dictionary<int, List<DrawableLine>> lineGroups = new();
-        private readonly Dictionary<DrawableLine, int> lineToGroupMap = new();
-        private static int nextLineGroupID = 1;
 
-        private void Awake()
-        {
-            if (Instance != null)
-            {
-                Destroy(gameObject);
-                return;
-            }
-            Instance = this;
-            DrawGuessPluginLoader.Log.LogInfo("PressureLineGroupManager initialized.");
-        }
-
-        public int CreateNewLineGroup(DrawableLine firstLine)
-        {
-            int groupID = nextLineGroupID++;
-            lineGroups[groupID] = new List<DrawableLine> { firstLine };
-            lineToGroupMap[firstLine] = groupID;
-            return groupID;
-        }
-
-        public void AddLineToGroup(DrawableLine line, int groupID)
-        {
-            if (lineGroups.TryGetValue(groupID, out var lines))
-            {
-                lines.Add(line);
-                lineToGroupMap[line] = groupID;
-            }
-        }
-
-        public int GetLineGroupID(DrawableLine line) =>
-            lineToGroupMap.TryGetValue(line, out int groupID) ? groupID : -1;
-
-        public void DeleteSingleLine(DrawableLine line)
-        {
-            if (lineToGroupMap.TryGetValue(line, out int groupID))
-            {
-                lineGroups[groupID].Remove(line);
-                lineToGroupMap.Remove(line);
-
-                if (lineGroups[groupID].Count == 0)
-                    lineGroups.Remove(groupID);
-            }
-        }
-
-        public void DeleteEntireLineGroup(int groupID)
-        {
-            if (lineGroups.TryGetValue(groupID, out var lines))
-            {
-                foreach (var line in lines)
-                    lineToGroupMap.Remove(line);
-
-                lineGroups.Remove(groupID);
-            }
-        }
-
-        public void ClearAllLineGroups()
-        {
-            lineGroups.Clear();
-            lineToGroupMap.Clear();
-        }
-    }
-
-    public class PressureLineSegment : MonoBehaviour
-    {
-        public int LineGroupID { get; set; }
-        public float PressureValue { get; set; }
-    }
-
-    public class UndoMultiDrawElement : IUndo
-    {
-        private List<DrawableElement> lines;
-
-        public UndoMultiDrawElement(IEnumerable<DrawableElement> drawnLines)
-        {
-            this.lines = new List<DrawableElement>(drawnLines);
-        }
-
-        public void Redo()
-        {
-            foreach (var line in lines)
-            {
-                if (line != null)
-                {
-                    line.MarkAsDeleted(false);
-                    if (LobbyManager.Instance != null && LobbyManager.Instance.SyncController != null)
-                    {
-                        LobbyManager.Instance.SyncController.LobbyAddDrawLine(line.ToLineInformation());
-                    }
-                }
-            }
-        }
-
-        public void Undo()
-        {
-            foreach (var line in lines)
-            {
-                if (line != null)
-                {
-                    line.MarkAsDeleted(true);
-                    if (LobbyManager.Instance != null && LobbyManager.Instance.SyncController != null && LobbyDrawModule.Instance != null)
-                    {
-                        string ownerId = AccessTools.Property(typeof(DrawModule), "LocalPlayfabId").GetValue(LobbyDrawModule.Instance) as string;
-                        if (string.IsNullOrEmpty(ownerId)) ownerId = "local";
-                        LobbyManager.Instance.SyncController.LobbyDrawingDeletePrecise(ownerId, line.Ident);
-                    }
-                }
-            }
-        }
-    }
-
-    // 压感工具类，笔检查方法
-    public static class PressureUtils
-    {
-        private static bool pressureSensitiveEnabled = true;
-
-        public static bool IsPenAvailable() =>
-            pressureSensitiveEnabled && Pen.current != null;
-    }
-
-    // 线条自相交检测和处理工具
-    public static class LineIntersectionUtils
-    {
-        // 检测线段是否相交
-        public static bool LineSegmentsIntersect(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
-        {
-            float d1 = Direction(c, d, a);
-            float d2 = Direction(c, d, b);
-            float d3 = Direction(a, b, c);
-            float d4 = Direction(a, b, d);
-
-            // 标准相交情况
-            if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && 
-                ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))
-            {
-                return true;
-            }
-
-            // 特殊共线情况（点在线段上）
-            if (d1 == 0 && IsOnSegment(c, d, a)) return true;
-            if (d2 == 0 && IsOnSegment(c, d, b)) return true;
-            if (d3 == 0 && IsOnSegment(a, b, c)) return true;
-            if (d4 == 0 && IsOnSegment(a, b, d)) return true;
-
-            return false;
-        }
-
-        // 计算向量叉积方向
-        private static float Direction(Vector2 p1, Vector2 p2, Vector2 p3)
-        {
-            return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
-        }
-
-        // 检测点是否在线段矩形范围内
-        private static bool IsOnSegment(Vector2 p1, Vector2 p2, Vector2 p)
-        {
-            return p.x >= Mathf.Min(p1.x, p2.x) && p.x <= Mathf.Max(p1.x, p2.x) &&
-                   p.y >= Mathf.Min(p1.y, p2.y) && p.y <= Mathf.Max(p1.y, p2.y);
-        }
-
-        // 检测多边形是否自相交
-        public static bool CheckSelfIntersection(List<Vector2> points)
-        {
-            int count = points.Count;
-            if (count < 4) return false;
-
-            for (int i = 0; i < count; i++)
-            {
-                for (int j = i + 2; j < count; j++)
-                {
-                    // 跳过相邻的线段和首尾线段（如果是闭合多边形，首尾也算相邻）
-                    if (Math.Abs(i - j) == 1 || (i == 0 && j == count - 1))
-                        continue;
-
-                    if (LineSegmentsIntersect(
-                        points[i], 
-                        points[(i + 1) % count], 
-                        points[j], 
-                        points[(j + 1) % count]))
-                    {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-    }
-
-    // 压感补丁类，包含所有与压感相关的补丁方法
+    /// <summary>
+    /// 压感补丁类，包含所有与压感相关的补丁方法
+    /// </summary>
     public static class PressurePatches
     {
         [HarmonyPatch(typeof(LinePressure))]
@@ -250,9 +66,8 @@ namespace DrawGuessPlugin
         [HarmonyPrefix]
         public static bool LinePressureActivatePrefix(LinePressure __instance)
         {
-            // 禁用游戏原有的LinePressure组件，接管压感处理
             __instance.enabled = false;
-            return false; 
+            return false;
         }
 
         [HarmonyPatch(typeof(LinePressure))]
@@ -260,171 +75,93 @@ namespace DrawGuessPlugin
         [HarmonyPrefix]
         public static bool LinePressureUpdatePrefix()
         {
-            // 禁用LinePressure的Update方法
-            return false; 
-        }
-
-        [HarmonyPatch(typeof(LinePressure))]
-        [HarmonyPatch("Finish")]
-        [HarmonyPostfix]
-        public static void LinePressureFinishPostfix()
-        {
-            // 不需要重置currentLineGroupID，在每个线段创建时都会生成新的ID
-        }
-
-        // 将UpdateLineWidth方法移动到类内，作为公共静态方法
-        public static void UpdateLineWidth(DrawableLine line, float pressure)
-        {
-            try
-            {
-                float adjustedPressure = Mathf.Clamp(pressure, 0.01f, 1f);
-                const int minWidth = 2, maxWidth = 35;
-                int calculatedWidth = minWidth + (int)((maxWidth - minWidth) * adjustedPressure);
-                byte newWidth = (byte)Mathf.Clamp(calculatedWidth, minWidth, maxWidth);
-
-                // 检查line是否为null
-                if (line == null)
-                {
-                    DrawGuessPluginLoader.Log.LogError("UpdateLineWidth: line is null");
-                    return;
-                }
-
-                // 更新BrushSize
-                line.BrushSize = newWidth;
-
-                // 安全地获取PolylineRenderer属性
-                var polylineRendererProperty = line.GetType().GetProperty("PolylineRenderer");
-                if (polylineRendererProperty == null)
-                {
-                    DrawGuessPluginLoader.Log.LogDebug("UpdateLineWidth: PolylineRenderer property not found");
-                    return;
-                }
-
-                var polylineRenderer = polylineRendererProperty.GetValue(line);
-                if (polylineRenderer == null)
-                {
-                    DrawGuessPluginLoader.Log.LogDebug("UpdateLineWidth: PolylineRenderer is null");
-                    return;
-                }
-
-                // 安全地设置Thickness属性
-                var thicknessProperty = polylineRenderer.GetType().GetProperty("Thickness");
-                if (thicknessProperty == null)
-                {
-                    DrawGuessPluginLoader.Log.LogDebug("UpdateLineWidth: Thickness property not found");
-                    return;
-                }
-
-                
-                float thickness = (float)newWidth / 100f;
-                thicknessProperty.SetValue(polylineRenderer, thickness);
-
-                var colorProperty = polylineRenderer.GetType().GetProperty("Color");
-                if (colorProperty != null)
-                {
-                    Color currentColor = (Color)colorProperty.GetValue(polylineRenderer);
-                    colorProperty.SetValue(polylineRenderer, currentColor);
-                }
-            }
-            catch (Exception ex)
-            {
-                DrawGuessPluginLoader.Log.LogError($"UpdateLineWidth exception: {ex.Message}\n{ex.StackTrace}");
-            }
+            return false;
         }
     }
 
     [HarmonyPatch(typeof(DrawModule), "ActivateTool")]
-        public static class DrawModuleActivateToolPatch
+    public static class DrawModuleActivateToolPatch
+    {
+        [HarmonyPostfix]
+        public static void ActivateToolPostfix(DrawModule __instance, DrawModule.DrawTool tool)
         {
-            [HarmonyPostfix]
-            public static void ActivateToolPostfix(DrawModule __instance, DrawModule.DrawTool tool)
+            try
             {
-                // 当工具切换时，强制更新所有压感线条的组件状态
-                // 确保它们响应新的工具（Eraser, Fill, Dropper）
-                
-                try
+                foreach (var group in PressureLine.PressureGroups.Values)
                 {
-                    DrawGuessPluginLoader.Log.LogInfo($"ActivateToolPostfix: Tool changed to {tool}. Updating components.");
-                    
-                    
-                    foreach (var group in PressureLine.PressureGroups.Values)
+                    foreach (var elem in group)
                     {
-                        foreach (var elem in group)
+                        if (elem is DrawableShape shape)
                         {
-                            if (elem is DrawableShape shape)
+                            if (tool == DrawModule.DrawTool.Eraser)
+                                shape.LineErase.SetLineSelectActive(true);
+                            else if (tool == DrawModule.DrawTool.Fill)
                             {
-                                if (tool == DrawModule.DrawTool.Eraser)
-                                    shape.LineErase.SetLineSelectActive(true);
-                                else if (tool == DrawModule.DrawTool.Fill)
-                                {
-                                    shape.LineFillable.SetLineSelectActive(true);
-                                    shape.SetHoverActive(true);
-                                }
-                                else if (tool == DrawModule.DrawTool.Dropper)
-                                    shape.LineDropperable.SetLineSelectActive(true);
-                                else
-                                {
-
-                                }
+                                shape.LineFillable.SetLineSelectActive(true);
+                                shape.SetHoverActive(true);
                             }
+                            else if (tool == DrawModule.DrawTool.Dropper)
+                                shape.LineDropperable.SetLineSelectActive(true);
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    DrawGuessPluginLoader.Log.LogError($"ActivateToolPostfix Error: {ex}");
                 }
             }
-        }
-        [HarmonyPatch(typeof(DrawModule), "DeletedPrecise")]
-        public static class DrawModuleDeletedPrecisePatch
-        {
-            [HarmonyPrefix]
-            public static bool DeletedPrecisePrefix(DrawModule __instance, DrawableElement drawable)
+            catch (Exception ex)
             {
-                int groupId = -1;
-                foreach (var kvp in PressureLine.PressureGroups)
+                DrawGuessPluginLoader.Log.LogError($"激活工具后处理失败: {ex}");
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(DrawModule), "DeletedPrecise")]
+    public static class DrawModuleDeletedPrecisePatch
+    {
+        [HarmonyPrefix]
+        public static bool DeletedPrecisePrefix(DrawModule __instance, DrawableElement drawable)
+        {
+            int groupId = -1;
+            foreach (var kvp in PressureLine.PressureGroups)
+            {
+                if (kvp.Value.Contains(drawable))
                 {
-                    if (kvp.Value.Contains(drawable))
-                    {
-                        groupId = kvp.Key;
-                        break;
-                    }
+                    groupId = kvp.Key;
+                    break;
                 }
+            }
 
-                if (groupId != -1)
+            if (groupId != -1)
+            {
+                var groupElements = new List<DrawableElement>(PressureLine.PressureGroups[groupId]);
+                
+                // 添加组合撤销事件
+                __instance.UndoSystem.AddEvent(new UndoMultiEraseElement(groupElements));
+                
+                // 更新撤销按钮状态
+                var drawingToolHub = AccessTools.Field(typeof(DrawModule), "DrawingToolHub").GetValue(__instance) as DrawingToolHub;
+                if (drawingToolHub != null) drawingToolHub.SetUndoButtons();
+
+                // 标记所有相关元素为删除状态
+                foreach (var elem in groupElements)
                 {
-                    DrawGuessPluginLoader.Log.LogInfo($"DeletedPrecise: Detected deletion of segment in group {groupId}. Triggering cascade delete.");
-                    
-                    var groupElements = new List<DrawableElement>(PressureLine.PressureGroups[groupId]);
-                    
-                    // 添加组合 Undo
-                    __instance.UndoSystem.AddEvent(new UndoMultiEraseElement(groupElements));
-                    // 使用 AccessTools 访问受保护的成员
-                    var drawingToolHub = AccessTools.Field(typeof(DrawModule), "DrawingToolHub").GetValue(__instance) as DrawingToolHub;
-                    if (drawingToolHub != null) drawingToolHub.SetUndoButtons();
-
-                    // 标记删除
-                    foreach (var elem in groupElements)
+                    if (elem != null)
                     {
-                        if (elem != null)
-                        {
-                            elem.MarkAsDeleted(true);
-                            // 级联更新 UI 状态
-                            // OnSendDeletePrecise 是 protected，使用 Traverse 调用
-                            Traverse.Create(__instance).Method("OnSendDeletePrecise", new object[] { elem.Ident }).GetValue();
-                        }
+                        elem.MarkAsDeleted(true);
+                        // 级联更新UI状态
+                        Traverse.Create(__instance).Method("OnSendDeletePrecise", new object[] { elem.Ident }).GetValue();
                     }
-                    
-                    
-                    // 返回 false 拦截原逻辑，避免只删除选中的那一段
-                    return false;
                 }
                 
-                return true;
+                // 返回false拦截原逻辑，避免只删除选中的那一段
+                return false;
             }
+            
+            return true;
         }
+    }
 
+    /// <summary>
+    /// 多线条擦除撤销操作，用于撤销一组线条的擦除
+    /// </summary>
     public class UndoMultiEraseElement : IUndo
     {
         private List<DrawableElement> lines;
@@ -436,7 +173,7 @@ namespace DrawGuessPlugin
 
         public void Undo()
         {
-            // Undo Erase -> Restore (Show)
+            // 撤销擦除 -> 恢复显示
             foreach (var line in lines)
             {
                 if (line != null) line.MarkAsDeleted(false);
@@ -445,7 +182,7 @@ namespace DrawGuessPlugin
 
         public void Redo()
         {
-            // Redo Erase -> Delete (Hide)
+            // 重做擦除 -> 删除隐藏
             foreach (var line in lines)
             {
                 if (line != null)
@@ -468,12 +205,11 @@ namespace DrawGuessPlugin
         [HarmonyPrefix]
         public static bool OnUpdateTickPrefix(DrawModule __instance)
         {
-            // 如果未启用压感，或当前工具不是笔刷，则执行原逻辑
+            // 如果未启用压感或当前工具不是笔刷，则执行原逻辑
             if (!MenuGameSettings.UsePenPressure.Value) return true;
             if (__instance.ActiveDrawTool != DrawModule.DrawTool.Brush) return true;
 
-            // 检查是否为 Stage 模式 (MLDrawModule) 或 远程同步模块 (SyncDrawModule)
-            // 如果是，则跳过压感逻辑，使用原逻辑
+            // 检查是否为Stage模式或远程同步模块，如果是则跳过压感逻辑
             if (IsStageOrSyncModule(__instance))
             {
                 return true;
@@ -484,18 +220,18 @@ namespace DrawGuessPlugin
             bool primary = DrawInput.GetPrimary();
             bool primaryUp = DrawInput.GetPrimaryUp();
 
-            // 处理 Finish (鼠标/笔抬起)
+            // 处理线条结束（鼠标/笔抬起）
             if (primaryUp)
             {
                 if (PressureLine.ActiveCreators.TryGetValue(__instance, out var creator))
                 {
                     creator.FinishLine();
                     PressureLine.ActiveCreators.Remove(__instance);
-                    return false; // 拦截原逻辑
+                    return false;
                 }
             }
 
-            // 处理 Start (鼠标/笔按下)
+            // 处理线条开始（鼠标/笔按下）
             if (primaryDown)
             {
                 Vector2 worldPoint;
@@ -503,11 +239,11 @@ namespace DrawGuessPlugin
                 if (__instance.GetWorldCoordsIfOverDrawSurface(out worldPoint) && DrawModule.IsDirectlyOverDrawSurface())
                 {
                     StartPressureLine(__instance, worldPoint);
-                    return false; // 拦截原逻辑
+                    return false;
                 }
             }
 
-            // 处理 Append (鼠标/笔按住)
+            // 处理线条绘制中（鼠标/笔按住）
             if (primary)
             {
                 if (PressureLine.ActiveCreators.TryGetValue(__instance, out var creator))
@@ -518,96 +254,96 @@ namespace DrawGuessPlugin
                         float pressure = (Pen.current != null) ? Mathf.Max(Pen.current.pressure.ReadValue(), 0.001f) : 1f;
                         creator.AppendPoint(worldPoint, pressure);
                     }
-                    return false; // 拦截原逻辑
+                    return false;
                 }
             }
 
-            return true; // 如果没有任何压感操作匹配，回退到原逻辑
+            return true;
         }
 
-        private static readonly Dictionary<Type, bool> _moduleTypeCache = new Dictionary<Type, bool>();
+        /// <summary>
+        /// 检查是否为Stage或同步模块，这些模块需要特殊处理
+        /// </summary>
         private static bool IsStageOrSyncModule(DrawModule instance)
         {
             if (instance == null) return false;
-            var type = instance.GetType();
-            if (_moduleTypeCache.TryGetValue(type, out bool result)) return result;
-
-            string name = type.Name;
+            string name = instance.GetType().Name;
             
-            // 显式排除 SyncDrawModule (远程同步)
-            if (name.Contains("Sync") || name.Contains("SyncDrawModule"))
+            // 明确排除远程同步模块，但允许MLDrawModule和ChainDrawModule
+            if (name.Contains("Sync") && !name.Contains("Async")) 
             {
-                _moduleTypeCache[type] = true;
-                return true;
-            }
-
-            // 显式排除 MLDrawModule (Stage / 游戏内)
-            if (name.Contains("MLDrawModule") || name.Contains("Stage") || name.Contains("ML"))
-            {
-                _moduleTypeCache[type] = true;
-                return true;
-            }
-
-            try
-            {
-                // Duck Typing: MLDrawModule 独有 'player' 和 'timer' 字段
-                // 使用标准反射避免 Harmony AccessTools.Field 产生警告
-                var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-                if (type.GetField("player", flags) != null && type.GetField("timer", flags) != null)
+                if (name != "MLDrawModule" && name != "ChainDrawModule")
                 {
-                    _moduleTypeCache[type] = true;
-                    return true;
+                    return false; 
                 }
             }
-            catch {}
             
-            _moduleTypeCache[type] = false;
+            // 允许ChainDrawModule
+            if (name == "ChainDrawModule")
+            {
+                 return false;
+            }
+
             return false;
         }
 
         private static PropertyInfo _localPlayfabIdProp;
         private static PropertyInfo LocalPlayfabIdProp => _localPlayfabIdProp ??= AccessTools.Property(typeof(DrawModule), "LocalPlayfabId");
 
+        /// <summary>
+        /// 开始绘制压力感应线条
+        /// </summary>
         private static void StartPressureLine(DrawModule __instance, Vector2 startPoint)
         {
             try
             {
-                DrawGuessPluginLoader.Log.LogInfo($"StartPressureLine: Starting at {startPoint}");
                 var shapePrefab = DrawHelpers.Instance.FilledShape;
                 var drawableShape = UnityEngine.Object.Instantiate(shapePrefab);
-                string owner = null;
+                
+                // 获取所有者ID
+                string owner = "local";
                 try
                 {
-                    // 使用 AccessTools 获取属性
                     owner = LocalPlayfabIdProp?.GetValue(__instance) as string;
+                    if (string.IsNullOrEmpty(owner)) owner = "local";
                 }
-                catch { }
+                catch {}
                 
-                if (string.IsNullOrEmpty(owner))
-                {
-                    owner = "local";
-                }
-
+                // 初始化绘制形状
                 drawableShape.Init((byte)DrawModule.BrushSize.Value, __instance.GetActiveColorToUse(), __instance.SortOrder.GetNextSortOrder(false), DrawHelpers.GetSortingLayer(__instance.SelectedLayer, false, false), owner, __instance);
+                
+                // 确保Polygon组件存在
+                if (drawableShape.Polygon == null)
+                {
+                    var poly = drawableShape.GetComponent<Polygon>();
+                    if (poly == null)
+                    {
+                         DrawGuessPluginLoader.Log.LogError("StartPressureLine: 实例化的预制件缺少Polygon组件");
+                         UnityEngine.Object.Destroy(drawableShape.gameObject);
+                         return;
+                    }
+                }
+                
+                // 设置形状位置和父对象
                 drawableShape.transform.position = Vector3.zero;
                 var t = drawableShape.transform;
                 t.SetParent(__instance.LineParent);
                 var lp = t.localPosition;
                 t.localPosition = new Vector3(lp.x, lp.y, __instance.SortOrder.NextLineZPos(false));
-
+                
+                // 创建压力线条创建器并开始新线条
                 var creator = drawableShape.gameObject.AddComponent<PressureLineCreator>();
                 creator.SetBrushSizeRange(1f, 99f);
                 creator.SetDrawModule(__instance);
                 creator.StartNewLine(startPoint, drawableShape);
                 
+                // 注册活跃创建器并更新DrawModule状态
                 PressureLine.ActiveCreators[__instance] = creator;
-                
-                // 更新 lastPos
                 Traverse.Create(__instance).Field("lastPos").SetValue(startPoint);
             }
             catch (Exception ex)
             {
-                DrawGuessPluginLoader.Log.LogError($"StartPressureLine Error: {ex}");
+                DrawGuessPluginLoader.Log.LogError($"StartPressureLine错误: {ex}");
             }
         }
     }
@@ -628,46 +364,6 @@ namespace DrawGuessPlugin
         }
     }
 
-    // 线条完成后处理自相交情况
-    [HarmonyPatch(typeof(DrawModule), "FinishLine", new Type[] { typeof(bool) })]
-    public static class DrawModuleFinishLineIntersectionPatch
-    {
-        [HarmonyPrefix]
-        public static void FinishLinePrefix(DrawModule __instance, bool addFinishingPoint)
-        {
-            var traverse = Traverse.Create(__instance);
-            var currentLine = traverse.Field("LineInProgress").GetValue<DrawableLine>();
-            
-            if (currentLine != null)
-            {
-                try
-                {
-                    // 获取当前线条的所有点
-                    var polylineRenderer = currentLine.PolylineRenderer;
-                    if (polylineRenderer != null && polylineRenderer.points.Count > 3)
-                    {
-                        // 提取点列表
-                        List<Vector2> points = new List<Vector2>();
-                        foreach (var point in polylineRenderer.points)
-                        {
-                            points.Add(point.point);
-                        }
-                        
-                        // 检测自相交
-                        if (LineIntersectionUtils.CheckSelfIntersection(points))
-                        {
-
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    DrawGuessPluginLoader.Log.LogError($"Self-intersection detection error: {ex.Message}");
-                }
-            }
-        }
-    }
-
     [HarmonyPatch(typeof(DrawModule), "ExecuteClear")]
     public static class DrawModuleExecuteClearPatch
     {
@@ -679,12 +375,14 @@ namespace DrawGuessPlugin
                 if (Bootstrap.Initialised && trigger != DrawingToolTrigger.System)
                     GameAnalyticsHandler.NewDesignEvent("DrawModule:ActivateTool:Clear");
 
+                // 完成当前正在绘制的形状
                 var shapeInProgress = Traverse.Create(__instance).Field("ShapeInProgress").GetValue<DrawableShape>();
                 if (shapeInProgress != null && !shapeInProgress.ShapeCreator.Finished)
                     shapeInProgress.ShapeCreator.FinishShape();
 
                 SelectiveFillableLine.Clear();
 
+                // 收集所有需要清除的元素
                 var myDrawnElements = __instance.GetMyDrawnElements();
                 var elementsToClear = new HashSet<DrawableElement>(myDrawnElements);
                 
@@ -698,13 +396,13 @@ namespace DrawGuessPlugin
 
                 var finalList = new List<DrawableElement>(elementsToClear);
 
-                
+                // 同步清除操作到网络
                 if (sync)
                 {
                     bool synced = false;
                     string instanceType = __instance.GetType().Name;
                     
-                  
+                    // 处理LobbyDrawModule的同步
                     if (instanceType.Contains("LobbyDrawModule") && LobbyManager.Instance != null && LobbyManager.Instance.SyncController != null)
                     {
                         try
@@ -715,7 +413,7 @@ namespace DrawGuessPlugin
                             LobbyManager.Instance.SyncController.LobbyDrawingClear(ownerId, layer);
                             synced = true;
 
-                           
+                            // 备用：精确删除每个元素，确保同步完整性
                             foreach (var elem in finalList)
                             {
                                 if (elem != null)
@@ -728,24 +426,25 @@ namespace DrawGuessPlugin
                         }
                         catch (Exception ex)
                         {
-                            DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix Manual Sync Error: {ex}");
+                            DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix手动同步错误: {ex}");
                         }
                     }
 
+                    // 处理其他模块的同步
                     if (!synced)
                     {
-                       
                         try 
                         {
                             Traverse.Create(__instance).Method("OnSendSyncClear").GetValue();
                         }
                         catch (Exception ex)
                         {
-                            DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix OnSendSyncClear Error: {ex}");
+                            DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix OnSendSyncClear错误: {ex}");
                         }
                     }
                 }
 
+                // 处理清除操作和撤销事件
                 if (finalList.Count > 0)
                 {
                     try 
@@ -757,9 +456,10 @@ namespace DrawGuessPlugin
                     }
                     catch (Exception ex) 
                     {
-                        DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix Undo Error: {ex}");
+                        DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix撤销错误: {ex}");
                     }
 
+                    // 标记所有元素为删除状态
                     foreach (var elem in finalList)
                     {
                         if (elem != null)
@@ -772,25 +472,25 @@ namespace DrawGuessPlugin
                         }
                     }
 
+                    // 更新
                     if (trigger != DrawingToolTrigger.System)
                         DrawModuleAccoladeTracker.NrOfClears++;
                     if (trigger == DrawingToolTrigger.Shortcut)
                         DrawModuleAccoladeTracker.NrOfShortcutUses++;
                 }
 
+                // 更新UI状态并清除压力线条组
                 var drawingToolHub = Traverse.Create(__instance).Field("DrawingToolHub").GetValue<DrawingToolHub>();
                 if (drawingToolHub != null) drawingToolHub.SetEraseButtons(false);
 
                 Traverse.Create(__instance).Method("OnClear").GetValue();
-
-                PressureLineGroupManager.Instance.ClearAllLineGroups();
                 PressureLine.PressureGroups.Clear();
 
                 return false;
             }
             catch (Exception ex)
             {
-                DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix Error: {ex}");
+                DrawGuessPluginLoader.Log.LogError($"ExecuteClearPrefix错误: {ex}");
                 return true;
             }
         }
@@ -804,25 +504,24 @@ namespace DrawGuessPlugin
         {
             try
             {
-                
+                // 检查'Other'字段是否为null，避免空引用异常
                 var otherField = AccessTools.Field(typeof(XORActivate), "Other");
                 if (otherField != null)
                 {
                     var otherObj = otherField.GetValue(__instance) as GameObject;
                     if (otherObj == null)
                     {
-                        
+                        // 如果Other为null，则阻止原始方法运行
                         return false;
                     }
                 }
             }
             catch (Exception)
             {
-                
+                // 抑制错误，确保程序继续执行
                 return false;
             }
             return true;
         }
     }
 }
-
