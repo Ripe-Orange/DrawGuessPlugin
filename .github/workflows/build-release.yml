@@ -31,7 +31,7 @@ jobs:
           VERSION=${RAW_VERSION#v}         # 去掉前缀 v → 1.0.0
           mkdir -p output
           FILE=output/DrawGuessPlugin-${VERSION}.dll
-          cp ./bin/Release/netstandard2.1/DrawGuessPlugin.dll $FILE
+          cp ./DrawGuessPlugin/bin/Release/netstandard2.1/DrawGuessPlugin.dll $FILE
           sha256sum $FILE > ${FILE}.sha256
 
       - name: Upload artifact
