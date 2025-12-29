@@ -1,0 +1,68 @@
+﻿name: Build and Release DrawGuessPlugin
+
+on:
+  push:
+    tags:
+      - 'v*'   # 例如 v1.0.0，打 tag 时触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build project
+        run: dotnet build -c Release --no-restore
+
+      - name: Publish DLL
+        shell: bash
+        run: |
+          RAW_VERSION=${GITHUB_REF_NAME}   # 例如 v1.0.0
+          VERSION=${RAW_VERSION#v}         # 去掉前缀 v → 1.0.0
+          mkdir -p output
+          FILE=output/DrawGuessPlugin-${VERSION}.dll
+          cp ./bin/Release/netstandard2.1/DrawGuessPlugin.dll $FILE
+          sha256sum $FILE > ${FILE}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DrawGuessPlugin
+          path: output/*
+
+  release:
+    name: Create Pre-release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: DrawGuessPlugin
+          path: release_artifacts
+
+      - name: List artifacts
+        run: ls -R release_artifacts
+
+      - name: Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_artifacts/DrawGuessPlugin-*.dll
+            release_artifacts/DrawGuessPlugin-*.dll.sha256
+          prerelease: true
+          tag_name: ${{ github.ref_name }}
+          name: "DrawGuessPlugin ${{ github.ref_name }}"
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
